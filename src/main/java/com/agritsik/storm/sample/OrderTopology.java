@@ -2,19 +2,18 @@ package com.agritsik.storm.sample;
 
 import org.apache.storm.Config;
 import org.apache.storm.LocalCluster;
+import org.apache.storm.kafka.*;
 import org.apache.storm.redis.bolt.AbstractRedisBolt;
 import org.apache.storm.redis.common.config.JedisPoolConfig;
-import org.apache.storm.spout.SpoutOutputCollector;
+import org.apache.storm.spout.SchemeAsMultiScheme;
 import org.apache.storm.task.OutputCollector;
 import org.apache.storm.task.TopologyContext;
 import org.apache.storm.topology.OutputFieldsDeclarer;
 import org.apache.storm.topology.TopologyBuilder;
 import org.apache.storm.topology.base.BaseRichBolt;
-import org.apache.storm.topology.base.BaseRichSpout;
 import org.apache.storm.tuple.Fields;
 import org.apache.storm.tuple.Tuple;
 import org.apache.storm.tuple.Values;
-import org.apache.storm.utils.Utils;
 import org.codehaus.jackson.JsonNode;
 import org.codehaus.jackson.map.ObjectMapper;
 import redis.clients.jedis.Jedis;
@@ -22,50 +21,19 @@ import redis.clients.jedis.JedisCommands;
 import redis.clients.jedis.JedisPool;
 
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.List;
 import java.util.Map;
-import java.util.Random;
+import java.util.UUID;
 
 /**
  * Created by andrey on 2/19/17.
  */
 public class OrderTopology {
 
-    /**
-     * Consumes events
-     */
-    public static class TCOrderSpout extends BaseRichSpout {
-
-        private SpoutOutputCollector collector;
-        private int i = 0;
-
-        @Override
-        public void open(Map conf, TopologyContext context, SpoutOutputCollector collector) {
-            this.collector = collector;
-        }
-
-        @Override
-        public void nextTuple() {
-            Utils.sleep(500);
-            List<String> list = Arrays.asList("Italy", "Spain", "France", "Greece");
-            Random random = new Random();
-
-            String body = "{\"order_id\": \"WR%d\", \"country\":\"" + list.get(random.nextInt(list.size())) + "\"}";
-            collector.emit(new Values(String.format(body, i++)));
-        }
-
-        @Override
-        public void declareOutputFields(OutputFieldsDeclarer declarer) {
-            declarer.declare(new Fields("json-order"));
-        }
-
-    }
 
     /**
      * Parses a json object
      */
-    public static class TCOrderParserBold extends BaseRichBolt {
+    public static class JsonParserBold extends BaseRichBolt {
 
         private OutputCollector collector;
 
@@ -78,12 +46,21 @@ public class OrderTopology {
         public void execute(Tuple input) {
             ObjectMapper objectMapper = new ObjectMapper();
             try {
-                JsonNode node = objectMapper.readTree(input.getStringByField("json-order"));
-                collector.emit(new Values(node.get("country").asText()));
+                String jsonString = input.getStringByField("str");
+                JsonNode node = objectMapper.readTree(jsonString);
+                JsonNode country = node.get("country");
+
+                if (country == null) {
+                    System.out.println("There is no country. Skip the message: " + jsonString);
+                } else {
+                    collector.emit(new Values(country.asText()));
+                }
+
                 collector.ack(input);
             } catch (IOException e) {
+                System.out.println("Error. Skip the message: " + e.getMessage());
                 e.printStackTrace();
-                collector.fail(input);
+                collector.ack(input); // skip the message
             }
         }
 
@@ -95,11 +72,11 @@ public class OrderTopology {
 
 
     /**
-     * Saves to redis
+     * Saves into Redis
      */
-    public static class TCOrderSaverBolt extends AbstractRedisBolt {
+    public static class CountrySaverBolt extends AbstractRedisBolt {
 
-        public TCOrderSaverBolt(JedisPoolConfig config) {
+        public CountrySaverBolt(JedisPoolConfig config) {
             super(config);
         }
 
@@ -117,13 +94,15 @@ public class OrderTopology {
         }
     }
 
-
-    public static class TCOrderPublisherBolt extends BaseRichBolt {
+    /**
+     * Publishes into Redis
+     */
+    public static class CountryPublisherBolt extends BaseRichBolt {
 
         private JedisPoolConfig config;
         private Jedis resource;
 
-        public TCOrderPublisherBolt(JedisPoolConfig config) {
+        public CountryPublisherBolt(JedisPoolConfig config) {
             this.config = config;
         }
 
@@ -131,8 +110,6 @@ public class OrderTopology {
         public void prepare(Map stormConf, TopologyContext context, OutputCollector collector) {
             JedisPool jedisPool = new JedisPool(new redis.clients.jedis.JedisPoolConfig(), config.getHost(), config.getPort());
             resource = jedisPool.getResource();
-
-
         }
 
         @Override
@@ -147,24 +124,42 @@ public class OrderTopology {
     }
 
     public static void main(String[] args) {
+
         JedisPoolConfig poolConfig = new JedisPoolConfig.Builder()
                 .setHost("192.168.99.100").setPort(6379)
                 .build();
 
         TopologyBuilder builder = new TopologyBuilder();
-        builder.setSpout("order", new TCOrderSpout(), 2);
-        builder.setBolt("order-parser", new TCOrderParserBold(), 2).shuffleGrouping("order");
-        builder.setBolt("order-saver", new TCOrderSaverBolt(poolConfig), 2).shuffleGrouping("order-parser");
-        builder.setBolt("order-pub", new TCOrderPublisherBolt(poolConfig), 2).shuffleGrouping("order-parser");
+        builder.setSpout("order", new KafkaSpout(buildKafkaSpoutConfig()), 2);
+        builder.setBolt("order-parser", new JsonParserBold(), 2).shuffleGrouping("order");
+        builder.setBolt("order-saver", new CountrySaverBolt(poolConfig), 2).shuffleGrouping("order-parser");
+        builder.setBolt("order-pub", new CountryPublisherBolt(poolConfig), 2).shuffleGrouping("order-parser");
 
         Config config = new Config();
         config.setDebug(true);
 
         LocalCluster cluster = new LocalCluster();
         cluster.submitTopology("wrTopology", config, builder.createTopology());
-        Utils.sleep(20000);
-        cluster.killTopology("wrTopology");
-        cluster.shutdown();
+//        Utils.sleep(20000);
+//        cluster.killTopology("wrTopology");
+//        cluster.shutdown();
+    }
+
+
+    /**
+     * Builds config for KafkaSpout
+     * @return SpoutConfig
+     */
+    private static SpoutConfig buildKafkaSpoutConfig() {
+        String zkConnString = "192.168.99.100:2181";
+        String topic = "my-first-topic";
+        BrokerHosts hosts = new ZkHosts(zkConnString);
+
+        SpoutConfig kafkaSpoutConfig = new SpoutConfig(hosts, topic, "/" + topic, UUID.randomUUID().toString());
+        kafkaSpoutConfig.bufferSizeBytes = 1024 * 1024 * 4;
+        kafkaSpoutConfig.fetchSizeBytes = 1024 * 1024 * 4;
+        kafkaSpoutConfig.scheme = new SchemeAsMultiScheme(new StringScheme());
+        return kafkaSpoutConfig;
     }
 
 }
