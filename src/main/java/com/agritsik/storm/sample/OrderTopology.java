@@ -125,8 +125,9 @@ public class OrderTopology {
 
     public static void main(String[] args) {
 
+        // TODO: redis config
         JedisPoolConfig poolConfig = new JedisPoolConfig.Builder()
-                .setHost("192.168.99.100").setPort(6379)
+                .setHost("localhost").setPort(6379)
                 .build();
 
         TopologyBuilder builder = new TopologyBuilder();
@@ -138,6 +139,7 @@ public class OrderTopology {
         Config config = new Config();
         config.setDebug(true);
 
+        // TODO: add cluster if-else
         LocalCluster cluster = new LocalCluster();
         cluster.submitTopology("wrTopology", config, builder.createTopology());
 //        Utils.sleep(20000);
@@ -151,8 +153,9 @@ public class OrderTopology {
      * @return SpoutConfig
      */
     private static SpoutConfig buildKafkaSpoutConfig() {
-        String zkConnString = "192.168.99.100:2181";
-        String topic = "my-first-topic";
+        // TODO: kafka config
+        String zkConnString = "localhost:2181";
+        String topic = "orders";
         BrokerHosts hosts = new ZkHosts(zkConnString);
 
         SpoutConfig kafkaSpoutConfig = new SpoutConfig(hosts, topic, "/" + topic, UUID.randomUUID().toString());
