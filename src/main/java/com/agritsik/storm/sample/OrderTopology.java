@@ -1,7 +1,10 @@
 package com.agritsik.storm.sample;
 
 import org.apache.storm.Config;
-import org.apache.storm.LocalCluster;
+import org.apache.storm.StormSubmitter;
+import org.apache.storm.generated.AlreadyAliveException;
+import org.apache.storm.generated.AuthorizationException;
+import org.apache.storm.generated.InvalidTopologyException;
 import org.apache.storm.kafka.*;
 import org.apache.storm.redis.bolt.AbstractRedisBolt;
 import org.apache.storm.redis.common.config.JedisPoolConfig;
@@ -123,11 +126,10 @@ public class OrderTopology {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InvalidTopologyException, AuthorizationException, AlreadyAliveException {
 
-        // TODO: redis config
         JedisPoolConfig poolConfig = new JedisPoolConfig.Builder()
-                .setHost("localhost").setPort(6379)
+                .setHost("127.0.0.1").setPort(6379)
                 .build();
 
         TopologyBuilder builder = new TopologyBuilder();
@@ -140,8 +142,8 @@ public class OrderTopology {
         config.setDebug(true);
 
         // TODO: add cluster if-else
-        LocalCluster cluster = new LocalCluster();
-        cluster.submitTopology("wrTopology", config, builder.createTopology());
+//        LocalCluster cluster = new LocalCluster();   //  - local storm for development purposes
+        StormSubmitter.submitTopology("wrTopology", config, builder.createTopology());
 //        Utils.sleep(20000);
 //        cluster.killTopology("wrTopology");
 //        cluster.shutdown();
@@ -153,8 +155,7 @@ public class OrderTopology {
      * @return SpoutConfig
      */
     private static SpoutConfig buildKafkaSpoutConfig() {
-        // TODO: kafka config
-        String zkConnString = "localhost:2181";
+        String zkConnString = "127.0.0.1:2181";
         String topic = "orders";
         BrokerHosts hosts = new ZkHosts(zkConnString);
 
